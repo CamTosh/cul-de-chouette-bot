@@ -2,156 +2,177 @@
 #-*- coding: utf-8 -*-
 import logging
 logging.basicConfig(level=logging.DEBUG)
-from cmdbot.core import Bot
-from cmdbot.decorators import admin, direct
+import discord
+client = discord.Client()
 from game import Game, Combinations
 
-
 def in_game(f):
-    "Decorator: only process if the game is initialised"
-    def newfunc(bot, line):
-        if bot.game:
-            return f(bot, line)
-    return newfunc
-
-
+	"""Decorator: only process if the game is initialised"""
+	def newfunc(bot, line):
+		if bot.game:
+			return f(bot, line)
+	return newfunc
 def in_running_game(f):
-    "Decorator: only process if the game is running"
-    def newfunc(bot, line):
-        if bot.game and bot.game.started:
-            return f(bot, line)
-    return newfunc
-
-
+	"""Decorator: only process if the game is running"""
+	def newfunc(bot, line):
+		if bot.game and bot.game.started:
+			return f(bot, line)
+	return newfunc
 def not_in_special_rule(f):
-    "Decorator: do not process if the game is in a special rule case"
-    def newfunc(bot, line):
-        if not bot.game.in_special_rule:
-            return f(bot, line)
-    return newfunc
+	"""Decorator: do not process if the game is in a special rule case"""
+	def newfunc(bot, line):
+		if not bot.game.in_special_rule:
+			return f(bot, line)
+	return newfunc
+
+async def say_discord(channel, msg):
+	await client.send_message(channel, msg)
+
+class CulDeChouetteBot():
+
+	async def say(self, discord, message):
+		await say_discord(discord.channel, message)
+
+	def game(self):
+		if not hasattr(self, '_game'):
+			self._game = Game()
+		return self._game
+
+	async def do_init(self, line):
+		""""Initialise a game"""
+		logging.info('ici')
+		if hasattr(self, 'game') and hasattr(self.game, 'started') and self._game.started:
+			await self.say(line, "Non, on ne peut pas.")
+			return
+
+		await self.say(line, 'Le jeu est prêt à commencer')
+		await self.say(line, 'Qui veut jouer ? (dire "!qdc moi")')
+
+	async def do_start(self, line):
+		"""Start the game"""
+		#if len(self._game.gamers) < 3:
+		#	await self.say(line, 'Pas assez de joueurs. Inscrivez-vous en disant "!qdc moi"')
+		#	return
+		self._game.start()
+		await self.say(line, 'Ça démarre... qui commence ?...')
+		await self.say(line, "c'est au tour de '%s'" % self._game.current_gamer)
+
+	async def do_scores(self, line):
+		"""Say the gamer list, with scores"""
+		s = []
+		for nick, score in self._game.gamers.items():
+			s.append('%s (%d)' % (nick, score))
+		await self.say(line, 'Joueurs: %s' % ', '.join(s))
+
+	async def do_moi(self, line):
+		"""Register the user"""
+		if line.author not in self._game.gamers:
+			self._game.gamers[line.author] = 0
+			await self.say(line, '%s est inscrit' % line.author)
+		else:
+			await self.say(line, 'déjà inscrit...')
+
+	async def do_roll(self, line):
+		"""Roll the dice if it's your turn"""
+		if line.author == self._game.current_gamer:
+			dices = self._game.dices()
+			await self.say(line, 'Les dés: %s' % ', '.join(map(str, dices)))
+			c = Combinations(dices)
+			score, messages, is_suite = c.resultat()
+			for message in messages:
+				await self.say(line, message)
+			if is_suite:
+				self._game.in_suite = True
+				self._game.grelotte = []
+				return  # nothing else to do ATM
+			if score > 0:
+				await self.say(line, '%s gagne %d points' % (line.author, score))
+				self._game.gamers[line.author] += score
+
+			if self._game.gamers[line.author] >= 343:
+				await self.say(line, "Le jeu est terminé ! C'est *%s* qui a gagné !" % str(line.author))
+				self._game.stop()
+				return
+
+			self._game.next()
+			await self.say(line, "c'est au tour de '%s'" % self._game.current_gamer)
+		else:
+			await self.say(line, "C'est pas ton tour, manant !")
+
+	async def do_grelotte(self, line):
+		"""Grelotte ca picote"""
+		if self._game.in_suite:
+			grelotte_line = ' '.join(line.message.split())
+			if grelotte_line.startswith(u'grelotte ça picote') \
+					or grelotte_line.startswith(u'grelotte ca picote'):
+				if line.author not in self._game.grelotte:
+					self._game.grelotte.append(line.author)
+			# check if everyone's here
+			difference = list(set(self._game.gamers.keys()).difference(set(self._game.grelotte)))
+			if len(difference) == 1:
+				gamer_nick = difference[0]
+				await self.say(line, '%s perd 10 points' % (gamer_nick))
+				self._game.gamers[gamer_nick] -= 10
+				self._game.next()
+				await self.say(line, "c'est au tour de '%s'" % self._game.current_gamer)
+
+		else:
+			# TODO: handle bevue
+			await self.say(line, 'Bévue !')
+
+	async def do_stop(self, line):
+		"Stop the current game"
+		await self.say(line, 'Le jeu est arrêté')
+		self._game.stop()
+
+	async def do_status(self, line):
+		"Give the current game status"
+		if not self._game.started:
+			await self.say(line, 'Aucun jeu en cours')
+			return
+		self.do_scores(line)
+		await self.say(line, "C'est le tour de : %s" % self._game.current_gamer)
 
 
-class CulDeChouetteBot(Bot):
+bot = CulDeChouetteBot()
+bot.game()
 
-    welcome_message = "Salut la compagnie ! Ça vous dirait un cul-de-chouette ?"
-    exit_message = "Allez, ciao les enfants. Soyez sages."
+@client.event
+async def on_message(message):
+	if message.author == client.user:
+		return
 
-    @property
-    def game(self):
-        if not hasattr(self, '_game'):
-            self._game = Game()
-        return self._game
+	if message.content.startswith('!qdc init'):
+		say_discord(message.channel, "Salut la compagnie ! Ça vous dirait un cul-de-chouette ?")
+		await bot.do_init(message)
+	
+	if message.content.startswith('!qdc start'):
+		await bot.do_start(message)
+	
+	if message.content.startswith('!qdc stop'):
+		await bot.do_stop(message)
 
-    @direct
-    @admin
-    def do_init(self, line):
-        "Initialise a game"
-        logging.info('ici')
-        if hasattr(self, 'game') and self.game.started:
-            self.say("Non, on ne peut pas.")
-            return
-        self.say('Le jeu est prêt à commencer')
-        self.say('Qui veut jouer ? (dire "moi")')
+	if message.content.startswith('!qdc scores'):
+		await bot.do_scores(message)
+	
+	if message.content.startswith('!qdc moi'):
+		await bot.do_moi(message)
+	
+	if message.content.startswith('!qdc roll'):
+		await bot.do_roll(message)
+	
+	if message.content.startswith('!qdc grelotte'):
+		await bot.do_grelotte(message)
+	
+	if message.content.startswith('!qdc status'):
+		await bot.do_status(message)
 
-    @direct
-    @admin
-    @in_game
-    def do_start(self, line):
-        "Start the game"
-        if len(self.game.gamers) < 3:
-            self.say('Pas assez de joueurs. Inscrivez-vous en disant "moi"')
-            return
-        self.game.start()
-        self.say('Ça démarre... qui commence ?...')
-        self.say("c'est au tour de '%s'" % self.game.current_gamer)
-    do_commencer = do_start
 
-    @in_game
-    def do_scores(self, line):
-        "Say the gamer list, with scores"
-        s = []
-        for nick, score in self.game.gamers.items():
-            s.append('%s (%d)' % (nick, score))
-        self.say('Joueurs: %s' % ', '.join(s))
+@client.event
+async def on_ready():
+	print('Logged in as')
+	print(client.user.name)
+	print(client.user.id)
+	print('------')
 
-    @in_game
-    def do_moi(self, line):
-        "Register the user"
-        if line.nick_from not in self.game.gamers:
-            self.game.gamers[line.nick_from] = 0
-            self.say('%s est inscrit' % line.nick_from)
-        else:
-            self.say('déjà inscrit...')
-
-    @in_game
-    @in_running_game
-    @not_in_special_rule
-    def do_roll(self, line):
-        "Roll the dice if it's your turn"
-        if line.nick_from == self.game.current_gamer:
-            dices = self.game.dices()
-            self.say('Les dés: %s' % ', '.join(map(str, dices)))
-            c = Combinations(dices)
-            score, messages, is_suite = c.resultat()
-            for message in messages:
-                self.say(message)
-            if is_suite:
-                self.game.in_suite = True
-                self.game.grelotte = []
-                return  # nothing else to do ATM
-            if score > 0:
-                self.say('%s gagne %d points' % (line.nick_from, score))
-                self.game.gamers[line.nick_from] += score
-
-            if self.game.gamers[line.nick_from] >= 343:
-                self.say("Le jeu est terminé ! C'est *%s* qui a gagné !" % str(line.nick_from))
-                self.game.stop()
-                return
-
-            self.game.next()
-            self.say("c'est au tour de '%s'" % self.game.current_gamer)
-        else:
-            self.say("C'est pas ton tour, manant !")
-    do_jouer = do_roll
-
-    def do_grelotte(self, line):
-        "Grelotte ca picote"
-        if self.game.in_suite:
-            grelotte_line = ' '.join(line.message.split())
-            if grelotte_line.startswith(u'grelotte ça picote') \
-                    or grelotte_line.startswith(u'grelotte ca picote'):
-                if line.nick_from not in self.game.grelotte:
-                    self.game.grelotte.append(line.nick_from)
-            # check if everyone's here
-            difference = list(set(self.game.gamers.keys()).difference(set(self.game.grelotte)))
-            if len(difference) == 1:
-                gamer_nick = difference[0]
-                self.say('%s perd 10 points' % (gamer_nick))
-                self.game.gamers[gamer_nick] -= 10
-                self.game.next()
-                self.say("c'est au tour de '%s'" % self.game.current_gamer)
-
-        else:
-            # TODO: handle bevue
-            self.say('Bévue !')
-
-    @direct
-    @admin
-    def do_stop(self, line):
-        "Stop the current game"
-        self.say('Le jeu est arrêté')
-        self.game.stop()
-
-    @direct
-    def do_status(self, line):
-        "Give the current game status"
-        if not self.game.started:
-            self.say('Aucun jeu en cours')
-            return
-        self.do_scores(line)
-        self.say("C'est le tour de : %s" % self.game.current_gamer)
-    do_statut = do_status
-
-if __name__ == '__main__':
-    bot = CulDeChouetteBot()
-    bot.run()
+client.run('Discord bot key')
